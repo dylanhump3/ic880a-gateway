@@ -8,13 +8,13 @@ if [ $UID != 0 ]; then
     exit 1
 fi
 
-VERSION="master"
+VERSION="spi"
 if [[ $1 != "" ]]; then VERSION=$1; fi
 
 echo "The Things Network Gateway installer"
 echo "Version $VERSION"
 
-# Update the gateway installer to the correct branch (defaults to master)
+# Update the gateway installer to the correct branch
 echo "Updating installer files..."
 OLD_HEAD=$(git rev-parse HEAD)
 git fetch
@@ -33,18 +33,16 @@ fi
 echo "Gateway configuration:"
 
 # Try to get gateway ID from MAC address
-# First try eth0, if that does not exist, try wlan0 (for RPi Zero)
-GATEWAY_EUI_NIC="eth0"
-if [[ `grep "$GATEWAY_EUI_NIC" /proc/net/dev` == "" ]]; then
-    GATEWAY_EUI_NIC="wlan0"
-fi
 
-if [[ `grep "$GATEWAY_EUI_NIC" /proc/net/dev` == "" ]]; then
+# Get first non-loopback network device that is currently connected
+GATEWAY_EUI_NIC=$(ip -oneline link show up 2>&1 | grep -v LOOPBACK | sed -E 's/^[0-9]+: ([0-9a-z]+): .*/\1/' | head -1)
+if [[ -z $GATEWAY_EUI_NIC ]]; then
     echo "ERROR: No network interface found. Cannot set gateway ID."
     exit 1
 fi
 
-GATEWAY_EUI=$(ip link show $GATEWAY_EUI_NIC | awk '/ether/ {print $2}' | awk -F\: '{print $1$2$3"FFFE"$4$5$6}')
+# Then get EUI based on the MAC address of that device
+GATEWAY_EUI=$(cat /sys/class/net/$GATEWAY_EUI_NIC/address | awk -F\: '{print $1$2$3"FFFE"$4$5$6}')
 GATEWAY_EUI=${GATEWAY_EUI^^} # toupper
 
 echo "Detected EUI $GATEWAY_EUI from $GATEWAY_EUI_NIC"
@@ -62,7 +60,7 @@ else
 
     printf "       Descriptive name [ttn-ic880a]:"
     read GATEWAY_NAME
-    if [[ $GATEWAY_NAME == "" ]]; then GATEWAY_NAME="ttn-ic880a"; fi
+    if [[ $GATEWAY_NAME == "" ]]; then GATEWAY_NAME="ttn-sx1301a"; fi
 
     printf "       Contact email: "
     read GATEWAY_EMAIL
@@ -91,31 +89,18 @@ if [[ $NEW_HOSTNAME != $CURRENT_HOSTNAME ]]; then
     sed -i "s/$CURRENT_HOSTNAME/$NEW_HOSTNAME/" /etc/hosts
 fi
 
-# Check dependencies
-echo "Installing dependencies..."
-apt-get install swig libftdi-dev python-dev
-
 # Install LoRaWAN packet forwarder repositories
 INSTALL_DIR="/opt/ttn-gateway"
 if [ ! -d "$INSTALL_DIR" ]; then mkdir $INSTALL_DIR; fi
 pushd $INSTALL_DIR
 
-# Build libraries
-if [ ! -d libmpsse ]; then
-    git clone https://github.com/devttys0/libmpsse.git
-    pushd libmpsse/src
-else
-    pushd libmpsse/src
-    git reset --hard
-    git pull
-fi
-
-./configure --disable-python
-make
-make install
-ldconfig
-
-popd
+# Remove WiringPi built from source (older installer versions)
+if [ -d wiringPi ]; then
+    pushd wiringPi
+    ./build uninstall
+    popd
+    rm -rf wiringPi
+fi 
 
 # Build LoRa gateway app
 if [ ! -d lora_gateway ]; then
@@ -128,11 +113,7 @@ else
     git reset --hard
 fi
 
-cp ./libloragw/99-libftdi.rules /etc/udev/rules.d/99-libftdi.rules
-
-sed -i -e 's/CFG_SPI= native/CFG_SPI= ftdi/g' ./libloragw/library.cfg
-sed -i -e 's/PLATFORM= kerlink/PLATFORM= lorank/g' ./libloragw/library.cfg
-sed -i -e 's/ATTRS{idProduct}=="6010"/ATTRS{idProduct}=="6014"/g' /etc/udev/rules.d/99-libftdi.rules
+sed -i -e 's/PLATFORM= kerlink/PLATFORM= imst_rpi/g' ./libloragw/library.cfg
 
 make
 
